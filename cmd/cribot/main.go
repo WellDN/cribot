@@ -16,17 +16,21 @@ func main() {
     runCmd()
 }
 // TODO: Make a login context
-// TODO: Make Users unique
 // TODO: Make chat a server
-// TODO: 
 
 func runCmd() {
     db, err := DbConnection()
     if err != nil {
         log.Fatal("An error occurred while connecting database", err)
     }
+    err = createTableUser(db)
+    if err != nil {
+        log.Fatal("An error occurred while creating a table", err)
+    }
 
     IRC(db)
+    
+    defer db.Close()
 }
 // Just testing how i would do it, but this doesn't make sense, yet
 // You have to pass in the unique user here
@@ -36,11 +40,21 @@ func IRC(db *sql.DB) {
     fmt.Println("\n\tChatty")
     fmt.Println(strings.Repeat("-", 25)+"\n")
 
+    fmt.Println("Enter the user's name:")
+    var name string
+    _, err := fmt.Scanln(&name)
+    if err != nil {
+        log.Fatal(err)
+    }
 
     for {
         now := time.Now()
-        name := "kekkington"
-        chatFormat := now.Format("[15:04] <" + name + "> ")
+        // pass the name user accordingly with the name provided
+        user, err := getUserByName(db, name)
+        if err != nil {
+            log.Fatal(err)
+        }
+        chatFormat := now.Format("[15:04] <" + user.Name + "> ")
         fmt.Print(chatFormat)
         if !in.Scan() {
             break
@@ -53,7 +67,8 @@ func IRC(db *sql.DB) {
 }
 
 func CriBot(cmd string) string {
-    // Stack scripts 
+    //TODO: Stack scripts 
+    //TODO: Concurrency
     switch cmd {
     case "!time":
         return time.Now().String() + "\n"
