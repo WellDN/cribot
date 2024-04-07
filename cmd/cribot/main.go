@@ -5,83 +5,162 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/welldn/cribot/pkg/database"
+)
+
+var (
+	in          = bufio.NewScanner(os.Stdin)
+	out         = make(chan string)
+	currentName string
+	mu          sync.Mutex
 )
 
 func main() {
-    runCmd()
-}
-// TODO: Make a login context
-// TODO: Make chat a server
+	db, err := DbConnection()
+	if err != nil {
+		log.Fatal("An error occurred while connecting database", err)
+	}
+	defer db.Close()
 
-func runCmd() {
-    db, err := DbConnection()
-    if err != nil {
-        log.Fatal("An error occurred while connecting database", err)
-    }
-    err = createTableUser(db)
-    if err != nil {
-        log.Fatal("An error occurred while creating a table", err)
-    }
+    go IRC(db)
 
-    IRC(db)
-    
-    defer db.Close()
+	http.HandleFunc("/", handleRequest)
+	fmt.Println("ChatBot is running on http://localhost:8080...")
+	log.Fatal(http.ListenAndServe(":8080", nil))
 }
-// Just testing how i would do it, but this doesn't make sense, yet
-// You have to pass in the unique user here
+
 func IRC(db *sql.DB) {
-    in := bufio.NewScanner(os.Stdin)
+	fmt.Println("\n\tChatty")
+	fmt.Println(strings.Repeat("-", 25) + "\n")
 
-    fmt.Println("\n\tChatty")
-    fmt.Println(strings.Repeat("-", 25)+"\n")
+	for {
+		fmt.Printf("Enter the user's name (or enter 'guest' to enter as guest): ")
+		if in.Scan() {
+			mu.Lock()
+			currentName = in.Text()
+			mu.Unlock()
 
-    fmt.Println("Enter the user's name:")
-    var name string
-    _, err := fmt.Scanln(&name)
-    if err != nil {
-        log.Fatal(err)
-    }
+			name := strings.TrimSpace(strings.ToLower(currentName))
 
-    for {
-        now := time.Now()
-        // pass the name user accordingly with the name provided
-        user, err := getUserByName(db, name)
+			if name == "guest" {
+				fmt.Println("entered as guest user.")
+				handleGuest()
+				continue
+			}
+            
+            _, err := database.GetUserDByName(db, name)
+			if err != nil {
+				log.Println("User not found in the database, please try again")
+				continue
+			}
+
+			// Chat loop for registered users
+			for {
+				mu.Lock()
+				name := currentName
+				mu.Unlock()
+
+				now := time.Now()
+
+				user, err := database.GetUserDByName(db, name)
+				if err != nil {
+					log.Println("User not found, try again")
+					break
+				}
+
+				chatFormat := now.Format("[15:04] <" + user.Name + "> ")
+				fmt.Print(chatFormat)
+
+				if in.Scan() {
+                    // this works but refactor
+                    cribot(db)
+
+                    //cribot() // This should be what users could do, but for guests should be different
+				} else {
+					log.Fatal("Failed to scan input:", in.Err())
+				}
+			}
+		} else {
+			log.Fatal("Failed to scan input:", in.Err())
+		}
+	}
+}
+
+func handleRequest(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+
+	name := r.URL.Query().Get("name")
+	if name == "" {
+		http.Error(w, "User's name is required", http.StatusBadRequest)
+		return
+	}
+
+	// Process the message
+	cmd := r.FormValue("message")
+	out <- fmt.Sprintf("%s: %s", name, cmd)
+
+	w.Write([]byte("Message sent"))
+}
+
+// this works but refactor
+func handleGuest() {
+	for {
+		now := time.Now()
+		fmt.Printf("[%s] <guest> ", now.Format("15:04"))
+
+		if in.Scan() {
+			cmd := in.Text()
+			switch cmd {
+			case "!commands":
+				 fmt.Println("Available commands for guest: !time, !os")
+			case "!time":
+				 fmt.Println("Current time:", now.Format("Mon Jan 2 15:04:05 2006"))
+			case "!os":
+				 fmt.Println("Your OS is:", runtime.GOOS)
+			default:
+				 fmt.Println("Unknown command. Available commands for guest: !time, !os")
+			}
+		} else {
+			log.Fatal("Failed to scan input:", in.Err())
+		}
+	}
+}
+
+// This should have more priviliage and just the user gonna use but doing the copy just to see
+// This works but refactor
+func cribot(db *sql.DB) {
+	for {
+		now := time.Now()
+        name := currentName
+        user, err := database.GetUserDByName(db, name)
         if err != nil {
-            log.Fatal(err)
-        }
-        chatFormat := now.Format("[15:04] <" + user.Name + "> ")
-        fmt.Print(chatFormat)
-        if !in.Scan() {
+            log.Println("User not found, try again")
             break
         }
-        cmd := in.Text()
-        out := CriBot(cmd) 
-        chatFormat = now.Format("[15:04] <cribot> ")
-        fmt.Print(chatFormat + out)
-    }
-}
+				chatFormat := now.Format("[15:04] <" + user.Name + "> ")
+				fmt.Print(chatFormat)
 
-func CriBot(cmd string) string {
-    //TODO: Stack scripts 
-    //TODO: Concurrency
-    switch cmd {
-    case "!time":
-        return time.Now().String() + "\n"
-    case "!os":
-        os := runtime.GOOS
-        return fmt.Sprintf("Your OS is: %s\n", os)
-    case "!commands":
-        return fmt.Sprintln("!time, !os")
-    default:
-        if strings.HasPrefix(cmd, "!") {
-            return fmt.Sprintln("This command does not exist. to see the commands infer: !commands")
-        } else {
-            return fmt.Sprintln("Give me a command (starting with '!')")
-        }
-    }
+		if in.Scan() {
+			cmd := in.Text()
+			switch cmd {
+			case "!commands":
+				 fmt.Println("Available commands for guest: !time, !os")
+			case "!time":
+				 fmt.Println("Current time:", now.Format("Mon Jan 2 15:04:05 2006"))
+			case "!os":
+				 fmt.Println("Your OS is:", runtime.GOOS)
+			default:
+				 fmt.Println("Unknown command. Available commands for guest: !time, !os")
+			}
+		} else {
+			log.Fatal("Failed to scan input:", in.Err())
+		}
+	}
 }
